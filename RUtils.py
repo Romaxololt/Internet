@@ -368,7 +368,7 @@ class IPv4:
         return ver_ihl + tos + total_len + ident + flags + ttl + protocol + checksum + src_ip + dst_ip + payload
 
 class RUtils:
-    def __init__(self, NIC, SWITCH_MAC, IP, debug=False, ident = 0, beautify=0):
+    def __init__(self, NIC, SWITCH_MAC, IP, debug=False, ident = 0, beautify=0, ARP_Gratuitous_On_start=True):
         """
         Initializes an RUtils object with the given Network Interface Card (NIC) and switch MAC address.
 
@@ -411,13 +411,16 @@ class RUtils:
             
         if self.beautify >= 2:
             print(Fore.YELLOW + Style.BRIGHT + f"[i] IP address set to {self.IP}")
-        
+
         if self.beautify >= 5:
             print(Fore.BLUE + Style.BRIGHT + f"[i] ARP cache: {self.ARP_Cache}")
         if self.ImSwitch and self.beautify >= 1:
             print(Fore.CYAN + Style.BRIGHT + f"[i] operating as switch \n")
         # only switch keeps a MAC table
         self.MAC_table = File.read_file(self.NIC.replace(":", "") + ".mac", typeof="dict") if self.ImSwitch else None
+
+        if ARP_Gratuitous_On_start:
+            self.Send_ARP_Gratuitous()
 
     def process(self):
         """
@@ -451,7 +454,7 @@ class RUtils:
                 else:
                     print(Fore.MAGENTA + Style.BRIGHT + f"\n[<>] Switch processing frame:", parsed["Protocol"])
 
-            if parsed["Destination MAC"] == self.NIC and not self.ImSwitch or (parsed["Destination MAC"] == "FF:FF:FF:FF:FF:FF" and not self.ImSwitch):
+            if parsed["Destination MAC"] == self.NIC or (parsed["Destination MAC"] == "FF:FF:FF:FF:FF:FF"):
                 #* Protocol Verif
                 if parsed["Protocol"] == "ARP":
                         
@@ -479,6 +482,13 @@ class RUtils:
                             print(Fore.BLACK +Back.BLUE + f"[<] {self.NIC} received ARP reply from {Arp_parsed['Sender IP']}, MAC: {Arp_parsed['Sender MAC']}")
 
                         self.ARP_Cache[Arp_parsed["Sender IP"]] = [Arp_parsed["Sender MAC"] , time.time() + 120]
+                    # Gratuitous ARP détecté : Sender IP == Target IP
+                    elif Arp_parsed["Opcode"] == 1 and Arp_parsed["Sender IP"] == Arp_parsed["Target IP"]:
+                        # on met à jour l'ARP cache
+                        self.ARP_Cache[Arp_parsed["Sender IP"]] = [Arp_parsed["Sender MAC"], time.time() + 120]
+                        if self.beautify >= 4:
+                            print(Fore.BLUE + f"[i] {self.NIC} learned gratuitous ARP: {Arp_parsed['Sender IP']} -> {Arp_parsed['Sender MAC']}")
+
                 else:
                     print(f"[<] Delivered frame directly to {self.NIC}")
                 continue
@@ -593,6 +603,23 @@ class RUtils:
             target_ip=target_ip)
         self.Send_Raw_Payload(ARP_paquet, dest_mac="FF:FF:FF:FF:FF:FF", OSI2_Protocol="Ethernet II", EtherType=0x0806)
 
+    def Send_ARP_Gratuitous(self):
+        arp_packet = ARP.build(
+            opcode=1,                     # ARP Request
+            sender_mac=self.NIC,
+            sender_ip=self.IP,
+            target_mac="00:00:00:00:00:00",
+            target_ip=self.IP            # ici on cible NOTRE propre IP
+        )
+
+        # envoi en broadcast comme toutes les gratuitous
+        self.Send_Raw_Payload(
+            arp_packet,
+            dest_mac="FF:FF:FF:FF:FF:FF",
+            OSI2_Protocol="Ethernet II",
+            EtherType=0x0806
+        )
+
     def Send_To_IPv4(self, payload, dest_ip):
         self.Send_ARP_Raw_Payload(1, dest_ip)
         
@@ -607,13 +634,9 @@ if __name__ == "__main__":
     #pc0.Send_ARP_Raw_Payload(1, "0.0.0.2")
     pc0.process()
     
-    switch = RUtils("00:00:00:00:00:FF", "00:00:00:00:00:FF", "0.0.0.0", debug=debug , beautify=beautify)
+    switch = RUtils("00:00:00:00:00:FF", "00:00:00:00:00:FF", "0.0.0.0", debug=debug , beautify=beautify, ARP_Gratuitous_On_start=False)
     switch.process()
 
-    pc1 = RUtils("00:00:00:00:00:02", "00:00:00:00:00:FF", "0.0.0.1", debug=debug , beautify=beautify)
+    pc1 = RUtils("00:00:00:00:00:02", "00:00:00:00:00:FF", "0.0.0.1", debug=debug , beautify=beautify, ARP_Gratuitous_On_start=False)
     pc1.process()
-    pc2 = RUtils("00:00:00:00:00:01", "00:00:00:00:00:FF", "0.0.0.2", debug=debug , beautify=beautify)
-    pc2.process()
-    switch.process()
-    pc0.process()
     switch.process()
