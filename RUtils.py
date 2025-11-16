@@ -1,5 +1,6 @@
 import os
 from colorama import Fore, Style, init, Back
+import time
 
 init(autoreset=True)
 
@@ -64,6 +65,14 @@ class File:
             for item in lst:
                 f.write(f"{item}\n")
 
+    @staticmethod
+    def save_dict(file_path, dct):
+        if dct is None:
+            dct = {}
+        file_path = os.path.join(os.getcwd(), "dat", file_path)
+        with open(file_path, 'w') as f:
+            for key, value in dct.items():
+                f.write(f"{key}={value}\n")
 
 class MAC:
     @staticmethod
@@ -376,6 +385,12 @@ class RUtils:
         self.SWITCH_MAC = SWITCH_MAC
         self.debug = debug
         self.IP = IP
+
+        tmpARP = File.read_file(NIC.replace(":", "") + ".arp", typeof="dict")
+        self.ARP_Cache = {}
+        for entry in tmpARP:
+            self.ARP_Cache[entry.split("=")[0]] = [entry.split("=")[1], entry.split("=")[2]]
+
         self.ident = ident
         # ensure port file exists
         port_file = os.path.join(os.getcwd(), "port", self.NIC.replace(":", "") + ".res")
@@ -397,10 +412,12 @@ class RUtils:
         if self.beautify >= 2:
             print(Fore.YELLOW + Style.BRIGHT + f"[i] IP address set to {self.IP}")
         
+        if self.beautify >= 5:
+            print(Fore.BLUE + Style.BRIGHT + f"[i] ARP cache: {self.ARP_Cache}")
         if self.ImSwitch and self.beautify >= 1:
             print(Fore.CYAN + Style.BRIGHT + f"[i] operating as switch \n")
         # only switch keeps a MAC table
-        self.MAC_table = File.read_file(self.NIC.replace(":", "") + ".dat", typeof="dict") if self.ImSwitch else None
+        self.MAC_table = File.read_file(self.NIC.replace(":", "") + ".mac", typeof="dict") if self.ImSwitch else None
 
     def process(self):
         """
@@ -430,9 +447,9 @@ class RUtils:
                 print(f"[<>] Processing frame by {self.NIC}:", parsed)
             if self.beautify >= 5:
                 if not self.ImSwitch:
-                    print(Fore.MAGENTA + Style.BRIGHT + f"[<>] {self.NIC} processing frame:", parsed["Protocol"])
+                    print(Fore.MAGENTA + Style.BRIGHT + f"\n[<>] {self.NIC} processing frame:", parsed["Protocol"])
                 else:
-                    print(Fore.MAGENTA + Style.BRIGHT + f"[<>] Switch processing frame:", parsed["Protocol"])
+                    print(Fore.MAGENTA + Style.BRIGHT + f"\n[<>] Switch processing frame:", parsed["Protocol"])
 
             if parsed["Destination MAC"] == self.NIC and not self.ImSwitch or (parsed["Destination MAC"] == "FF:FF:FF:FF:FF:FF" and not self.ImSwitch):
                 #* Protocol Verif
@@ -457,6 +474,11 @@ class RUtils:
                     elif Arp_parsed["Opcode"] == 2 and Arp_parsed["Target IP"] == self.IP:
                         if self.debug:
                             print(f"[i] {self.NIC} received ARP reply from {Arp_parsed['Sender IP']}, MAC: {Arp_parsed['Sender MAC']}")
+
+                        if self.beautify >= 4:
+                            print(Fore.BLACK +Back.BLUE + f"[<] {self.NIC} received ARP reply from {Arp_parsed['Sender IP']}, MAC: {Arp_parsed['Sender MAC']}")
+
+                        self.ARP_Cache[Arp_parsed["Sender IP"]] = [Arp_parsed["Sender MAC"] , time.time() + 120]
                 else:
                     print(f"[<] Delivered frame directly to {self.NIC}")
                 continue
@@ -471,11 +493,27 @@ class RUtils:
         if self.debug and self.ImSwitch:
             print(f"[i] MAC table for {self.NIC}: {self.MAC_table}")
 
+        # persist ARP table
+
+        for key in list(self.ARP_Cache.keys()):
+            if time.time() > float(self.ARP_Cache[key][1]):
+                del self.ARP_Cache[key]
+            else:
+                if self.beautify >= 4:
+                    print(Fore.BLUE + f"[i] Time left for {key} in seconds: {float(self.ARP_Cache[key][1]) - time.time()}")
+
+
+        lst_to_save = []
+        for entry in self.ARP_Cache:
+            lst_to_save.append(f"{entry}={self.ARP_Cache[entry][0]}={self.ARP_Cache[entry][1]}")
+
+        os.makedirs(os.path.join(os.getcwd(), "dat"), exist_ok=True)
+        File.save_list(self.NIC.replace(":", "") + ".arp", lst_to_save)
 
         # persist MAC table only if switch
         if self.ImSwitch:
             os.makedirs(os.path.join(os.getcwd(), "dat"), exist_ok=True)
-            File.save_list(self.NIC.replace(":", "") + ".dat", self.MAC_table)
+            File.save_list(self.NIC.replace(":", "") + ".mac", self.MAC_table)
 
     def send(self, frame):
         """
@@ -554,15 +592,19 @@ class RUtils:
             target_mac=target_mac,
             target_ip=target_ip)
         self.Send_Raw_Payload(ARP_paquet, dest_mac="FF:FF:FF:FF:FF:FF", OSI2_Protocol="Ethernet II", EtherType=0x0806)
+
+    def Send_To_IPv4(self, payload, dest_ip):
+        self.Send_ARP_Raw_Payload(1, dest_ip)
         
 
 if __name__ == "__main__":
     debug = False
-    beautify = 4
+    beautify = 10
     switch_mac = "00:00:00:00:00:FF"
     
     pc0 = RUtils("00:00:00:00:00:03", "00:00:00:00:00:FF", "0.0.0.3", debug=debug, beautify=beautify)
-    pc0.Send_ARP_Raw_Payload(1, "0.0.0.2")
+    #pc0.Send
+    #pc0.Send_ARP_Raw_Payload(1, "0.0.0.2")
     pc0.process()
     
     switch = RUtils("00:00:00:00:00:FF", "00:00:00:00:00:FF", "0.0.0.0", debug=debug , beautify=beautify)
