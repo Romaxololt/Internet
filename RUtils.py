@@ -1,5 +1,5 @@
 import os
-from colorama import Fore, Style, init
+from colorama import Fore, Style, init, Back
 
 init(autoreset=True)
 
@@ -428,7 +428,7 @@ class RUtils:
             parsed = MAC.field_extract(raw)
             if self.debug:
                 print(f"[<>] Processing frame by {self.NIC}:", parsed)
-            if self.beautify >= 3:
+            if self.beautify >= 5:
                 if not self.ImSwitch:
                     print(Fore.MAGENTA + Style.BRIGHT + f"[<>] {self.NIC} processing frame:", parsed["Protocol"])
                 else:
@@ -441,7 +441,7 @@ class RUtils:
                     Arp_parsed = ARP.parse(parsed["Payload"])
                     if Arp_parsed["Opcode"] == 1 and Arp_parsed["Target IP"] == self.IP:
                         if self.beautify >= 4:
-                            print(Fore.BLUE + Style.BRIGHT + f"[<] {self.NIC} received ARP request from {Arp_parsed['Sender IP']}, MAC: {Arp_parsed['Sender MAC']}")
+                            print(Fore.BLUE + Style.BRIGHT + f"[<] {self.NIC} received ARP request from {Arp_parsed['Sender IP']}")
                         if self.debug:
                             print(f"[i] {self.NIC} preparing ARP reply to {Arp_parsed['Sender IP']}")
                         arp_reply = ARP.build(
@@ -452,6 +452,8 @@ class RUtils:
                             target_ip=Arp_parsed["Sender IP"]
                         )
                         self.Send_Raw_Payload(arp_reply, dest_mac=Arp_parsed["Sender MAC"], OSI2_Protocol="Ethernet II", EtherType=0x0806)
+                        if self.beautify >= 4:
+                            print(Fore.BLACK + Back.GREEN + "[>] sending ARP-reply")
                     elif Arp_parsed["Opcode"] == 2 and Arp_parsed["Target IP"] == self.IP:
                         if self.debug:
                             print(f"[i] {self.NIC} received ARP reply from {Arp_parsed['Sender IP']}, MAC: {Arp_parsed['Sender MAC']}")
@@ -556,7 +558,7 @@ class RUtils:
 
 if __name__ == "__main__":
     debug = False
-    beautify = 10
+    beautify = 4
     switch_mac = "00:00:00:00:00:FF"
     
     pc0 = RUtils("00:00:00:00:00:03", "00:00:00:00:00:FF", "0.0.0.3", debug=debug, beautify=beautify)
@@ -566,8 +568,8 @@ if __name__ == "__main__":
     switch = RUtils("00:00:00:00:00:FF", "00:00:00:00:00:FF", "0.0.0.0", debug=debug , beautify=beautify)
     switch.process()
 
-    # pc1 = RUtils("00:00:00:00:00:02", "00:00:00:00:00:FF", "0.0.0.1", debug=debug , beautify=beautify)
-    # pc1.process()
+    pc1 = RUtils("00:00:00:00:00:02", "00:00:00:00:00:FF", "0.0.0.1", debug=debug , beautify=beautify)
+    pc1.process()
     pc2 = RUtils("00:00:00:00:00:01", "00:00:00:00:00:FF", "0.0.0.2", debug=debug , beautify=beautify)
     pc2.process()
     switch.process()
