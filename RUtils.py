@@ -1,5 +1,11 @@
 import os
 
+Protocol_Ethertype = {
+    0x0800: "IPv4",
+    0x0806: "ARP",
+    0x86DD: "IPv6"
+}
+
 def str_to_bits(s):
     return ''.join(f'{ord(c):08b}' for c in s)
 
@@ -84,12 +90,13 @@ class MAC:
         eth_type = int(frame[96:112], 2)
         payload = bits_to_str(frame[112:])
         return {
-            "Trame Type": "Ethernet II" if eth_type < 1536 else "IEEE 802.3",
+            "Trame Type": "Ethernet II" if eth_type > 1536 else "IEEE 802.3",
             "Destination MAC": dst_mac,
             "Source MAC": src_mac,
-            "EtherType": eth_type,
+            "EtherType" if eth_type > 1536 else "Length": eth_type,
             "Payload": payload,
-            "Length": len(frame)
+            "Length": len(frame),
+            "Protocol": Protocol_Ethertype[eth_type]
         }
 
     @staticmethod
@@ -122,9 +129,9 @@ class RUtils:
                 f.write('')
         self.ImSwitch = (NIC == SWITCH_MAC)
         if debug and self.ImSwitch:
-            print("[+] Operating in switch mode as " + self.NIC)
+            print("\n[+] Operating in switch mode as " + self.NIC)
         elif debug:
-            print(f"[+] Operating in client mode as {self.NIC}")
+            print(f"\n[+] Operating in client mode as {self.NIC}")
         # only switch keeps a MAC table
         self.MAC_table = File.read_file(self.NIC.replace(":", "") + ".dat", typeof="dict") if self.ImSwitch else None
 
@@ -136,7 +143,7 @@ class RUtils:
             if self.debug:
                 print(f"[<>] Processing frame by {self.NIC}:", parsed)
 
-            if parsed["Destination MAC"] == self.NIC:
+            if parsed["Destination MAC"] == self.NIC and not self.ImSwitch or (parsed["Destination MAC"] == "FF:FF:FF:FF:FF:FF" and not self.ImSwitch):
                 print(f"[<] Delivered frame directly to {self.NIC}")
                 continue
 
@@ -147,7 +154,7 @@ class RUtils:
         with open(os.path.join("port", file_name), 'w') as f:
             f.write('')
 
-        if self.debug:
+        if self.debug and self.ImSwitch:
             print(f"[i] MAC table for {self.NIC}: {self.MAC_table}")
 
         # persist MAC table only if switch
@@ -170,6 +177,18 @@ class RUtils:
                 self.MAC_table.append(src)
                 if self.debug:
                     print(f"[i] Switch learned MAC address: {src}")
+
+            if dst == "FF:FF:FF:FF:FF:FF":
+                # broadcast
+                for mac in MAC.flood(self.SWITCH_MAC):
+                    if mac == src:
+                        continue
+                    if mac == self.SWITCH_MAC:
+                        continue
+                    File.add_line(mac.replace(":", "") + ".res", frame)
+                    if self.debug:
+                        print(f"[>] Switch flooded frame to {mac} because broadcast")
+                return
 
             # known destination -> forward directly
             if dst in self.MAC_table:
@@ -207,7 +226,9 @@ if __name__ == "__main__":
     switch = RUtils("00:00:00:00:00:00", "00:00:00:00:00:00", debug=debug)
     switch.process()
 
-    pc1 = RUtils("00:00:00:00:00:01", "00:00:00:00:00:00", debug=debug)
-    pc1.Send_Raw_Payload("Test Frame", dest_mac="00:00:00:00:00:02", OSI2_Protocol="Ethernet II")
-    pc2 = RUtils("00:00:00:00:00:02", "00:00:00:00:00:00", debug=debug)
+    pc0 = RUtils("00:00:00:00:00:03", "00:00:00:00:00:00", debug=debug)
+    pc0.process()
+    pc1 = RUtils("00:00:00:00:00:02", "00:00:00:00:00:00", debug=debug)
+    pc1.process()
+    pc2 = RUtils("00:00:00:00:00:01", "00:00:00:00:00:00", debug=debug)
     pc2.process()
