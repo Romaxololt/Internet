@@ -4,6 +4,7 @@ def str_to_bits(s):
     return ''.join(f'{ord(c):08b}' for c in s)
 
 def bits_to_str(b):
+    
     chars = [b[i:i+8] for i in range(0, len(b), 8)]
     return ''.join(chr(int(char, 2)) for char in chars)
 
@@ -83,6 +84,7 @@ class MAC:
         eth_type = int(frame[96:112], 2)
         payload = bits_to_str(frame[112:])
         return {
+            "Trame Type": "Ethernet II" if eth_type < 1536 else "IEEE 802.3",
             "Destination MAC": dst_mac,
             "Source MAC": src_mac,
             "EtherType": eth_type,
@@ -201,7 +203,7 @@ class RUtils:
 
 
 if __name__ == "__main__":
-    debug = False
+    debug = True
     switch = RUtils("00:00:00:00:00:00", "00:00:00:00:00:00", debug=debug)
     switch.process()
 
