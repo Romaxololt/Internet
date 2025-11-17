@@ -10,8 +10,10 @@ Protocol_Ethertype = {
     0x86DD: "IPv6"
 }
 
+
 def str_to_bits(s):
     return ''.join(f'{ord(c):08b}' for c in s)
+
 
 def str_to_RBinary(s):
     val = 0
@@ -21,10 +23,44 @@ def str_to_RBinary(s):
             val = val | 1
     return val
 
+
 def bits_to_str(b):
-    
     chars = [b[i:i+8] for i in range(0, len(b), 8)]
     return ''.join(chr(int(char, 2)) for char in chars)
+
+
+# ------------------ Beautify / logging helper ------------------
+
+def bprint(need_level, nic, current_level, text, fore=None, back=None, bright=False, prefix=None):
+    """Centralized printing function for all beautify outputs.
+
+    - need_level: minimal beautify level required to show the message
+    - nic: identifier used in the prefix (usually the NIC string)
+    - current_level: the instance's beautify level
+    - text: message to print
+    - fore/back/bright: colorama attributes (optional)
+    - prefix: if provided, uses that instead of timestamped prefix
+    """
+    # preserve original behaviour: if need_level == 0 -> always print
+    if need_level != 0 and current_level < need_level:
+        return
+
+    parts = []
+    if fore:
+        parts.append(fore)
+    if back:
+        parts.append(back)
+    if bright:
+        parts.append(Style.BRIGHT)
+
+    if prefix is None:
+        timestamp = time.strftime("%H:%M:%S")
+        header = f"[{timestamp}]({nic}) "
+    else:
+        header = prefix
+
+    print(''.join(parts) + header + str(text))
+
 
 class File:
     @staticmethod
@@ -73,6 +109,7 @@ class File:
         with open(file_path, 'w') as f:
             for key, value in dct.items():
                 f.write(f"{key}={value}\n")
+
 
 class MAC:
     @staticmethod
@@ -144,6 +181,7 @@ class MAC:
                 flood.append(mac)
         return flood
 
+
 class ARP:
     @staticmethod
     def build(opcode, sender_mac, sender_ip, target_mac, target_ip, hw_type=1, proto_type=0x0800, hw_size=6, proto_size=4):
@@ -199,6 +237,7 @@ class ARP:
             print("  Target MAC Address: (unknown)")
         else:
             print(f"  Target MAC Address: {parsed['Target MAC']}")
+
 
 class IPv4:
     @staticmethod
@@ -367,23 +406,15 @@ class IPv4:
         payload = str_to_bits(payload)
         return ver_ihl + tos + total_len + ident + flags + ttl + protocol + checksum + src_ip + dst_ip + payload
 
+
 class RUtils:
-    def __init__(self, NIC, SWITCH_MAC, IP, debug=False, ident = 0, beautify=0, ARP_Gratuitous_On_start=True):
+    def __init__(self, NIC, SWITCH_MAC, IP, ident = 0, beautify=0, ARP_Gratuitous_On_start=True, MTU=1500):
         """
         Initializes an RUtils object with the given Network Interface Card (NIC) and switch MAC address.
-
-        Parameters:
-            NIC (str): the Network Interface Card (NIC) to use
-            SWITCH_MAC (str): the MAC address of the switch
-            debug (bool): whether to print debug messages
-            ident (int): the identification number for the RUtils object
-
-        Returns:
-            None
         """
+        self.MTU = MTU
         self.NIC = NIC
         self.SWITCH_MAC = SWITCH_MAC
-        self.debug = debug
         self.IP = IP
 
         tmpARP = File.read_file(NIC.replace(":", "") + ".arp", typeof="dict")
@@ -399,71 +430,54 @@ class RUtils:
             with open(port_file, 'w') as f:
                 f.write('')
         self.ImSwitch = (NIC == SWITCH_MAC)
-        if debug and self.ImSwitch:
-            print("\n[+] Operating in switch mode as " + self.NIC)
-        elif debug:
-            print(f"\n[+] Operating in client mode as {self.NIC}")
             
         self.beautify = beautify
         
+        # pretty prints using centralized helper (keeps behaviour identical but nicer formatting)
         if self.beautify >= 1:
-            print(Fore.GREEN + Style.BRIGHT + f"\n[i] initialized for NIC {self.NIC} with switch {self.SWITCH_MAC} {"\n" if not self.ImSwitch else ""}")
+            extra = "\n" if not self.ImSwitch else ""
+            bprint(1, self.NIC, self.beautify, f"[i] initialized for NIC {self.NIC} with switch {self.SWITCH_MAC}{extra}", fore=Fore.GREEN, bright=True)
             
         if self.beautify >= 2:
-            print(Fore.YELLOW + Style.BRIGHT + f"[i] IP address set to {self.IP}")
+            bprint(2, self.NIC, self.beautify, f"[i] IP address set to {self.IP}", fore=Fore.YELLOW, bright=True)
 
         if self.beautify >= 5:
-            print(Fore.BLUE + Style.BRIGHT + f"[i] ARP cache: {self.ARP_Cache}")
+            bprint(5, self.NIC, self.beautify, f"[i] ARP cache: {self.ARP_Cache}", fore=Fore.BLUE, bright=True)
         if self.ImSwitch and self.beautify >= 1:
-            print(Fore.CYAN + Style.BRIGHT + f"[i] operating as switch \n")
+            bprint(1, self.NIC, self.beautify, f"[i] operating as switch", fore=Fore.CYAN, bright=True)
+
         # only switch keeps a MAC table
         self.MAC_table = File.read_file(self.NIC.replace(":", "") + ".mac", typeof="dict") if self.ImSwitch else None
 
         if ARP_Gratuitous_On_start:
-            self.Send_ARP_Gratuitous()
+            bprint(3, self.NIC, self.beautify, f"[i] Sending gratuitous ARP on start : {self.IP} -> {self.NIC}", fore=Fore.BLACK, back=Back.YELLOW)
+            self.send(self.Build_ARP_Gratuitous())
 
+    def Constant_Process(self, timeout=1):
+        while True:
+            self.process()
+            time.sleep(timeout)
+        
     def process(self):
-        """
-        Processes all frames in the inbox of the given Network Interface Card (NIC) and sends them to their destination.
-
-        The function reads all frames from the inbox of the given NIC, parses them, and sends them to their destination according to the MAC table.
-
-        If the destination MAC address of a frame is the NIC itself or the broadcast address and the NIC is not a switch, the function delivers the frame directly to the NIC.
-
-        If the destination MAC address of a frame is not in the MAC table and the NIC is a switch, the function does not send the frame.
-
-        Finally, the function clears the inbox of the given NIC and persists the MAC table to a file only if the NIC is a switch.
-
-        Parameters:
-            None
-
-        Returns:
-            None
-        """
-        if self.debug:
-            print(f"\n[+] {self.NIC} processing inbox as {'switch' if self.ImSwitch else 'client'}")
         file_name = self.NIC.replace(":", "") + ".res"
         frames = File.read_file(file_name, typeof="port")
         for raw in frames:
             parsed = MAC.field_extract(raw)
-            if self.debug:
-                print(f"[<>] Processing frame by {self.NIC}:", parsed)
             if self.beautify >= 5:
                 if not self.ImSwitch:
-                    print(Fore.MAGENTA + Style.BRIGHT + f"\n[<>] {self.NIC} processing frame:", parsed["Protocol"])
+                    bprint(5, self.NIC, self.beautify, f"[<>] processing frame: {parsed['Protocol']}", fore=Fore.MAGENTA, bright=True)
                 else:
-                    print(Fore.MAGENTA + Style.BRIGHT + f"\n[<>] Switch processing frame:", parsed["Protocol"])
+                    bprint(5, self.NIC, self.beautify, f"[<>] Switch processing frame: {parsed['Protocol']}", fore=Fore.MAGENTA, bright=True)
 
-            if parsed["Destination MAC"] == self.NIC or (parsed["Destination MAC"] == "FF:FF:FF:FF:FF:FF"):
+            if parsed["Destination MAC"] == self.NIC or (parsed["Destination MAC"] == "FF:FF:FF:FF:FF:FF"): #* IF FOR ME OR BROADCAST
                 #* Protocol Verif
-                if parsed["Protocol"] == "ARP":
-                        
+                if parsed["Protocol"] == "ARP": #* IF ARP
+                    if self.beautify >= 4:
+                        bprint(4, self.NIC, self.beautify, f"[<] received ARP packet", fore=Fore.BLUE, bright=True)
                     Arp_parsed = ARP.parse(parsed["Payload"])
-                    if Arp_parsed["Opcode"] == 1 and Arp_parsed["Target IP"] == self.IP:
+                    if Arp_parsed["Opcode"] == 1 and Arp_parsed["Target IP"] == self.IP: #* IF ARP REQUEST
                         if self.beautify >= 4:
-                            print(Fore.BLUE + Style.BRIGHT + f"[<] {self.NIC} received ARP request from {Arp_parsed['Sender IP']}")
-                        if self.debug:
-                            print(f"[i] {self.NIC} preparing ARP reply to {Arp_parsed['Sender IP']}")
+                            bprint(4, self.NIC, self.beautify, f"[<] received ARP request from {Arp_parsed['Sender IP']}", fore=Fore.BLUE, bright=True)
                         arp_reply = ARP.build(
                             opcode=2,
                             sender_mac=self.NIC,
@@ -471,37 +485,35 @@ class RUtils:
                             target_mac=Arp_parsed["Sender MAC"],
                             target_ip=Arp_parsed["Sender IP"]
                         )
-                        self.Send_Raw_Payload(arp_reply, dest_mac=Arp_parsed["Sender MAC"], OSI2_Protocol="Ethernet II", EtherType=0x0806)
+                        # preserve original call to send (keeps logic intact)
+                        self.Send(self.Build_Raw_Payload(arp_reply, dest_mac=Arp_parsed["Sender MAC"], OSI2_Protocol="Ethernet II", EtherType=0x0806))
                         if self.beautify >= 4:
-                            print(Fore.BLACK + Back.GREEN + "[>] sending ARP-reply")
-                    elif Arp_parsed["Opcode"] == 2 and Arp_parsed["Target IP"] == self.IP:
-                        if self.debug:
-                            print(f"[i] {self.NIC} received ARP reply from {Arp_parsed['Sender IP']}, MAC: {Arp_parsed['Sender MAC']}")
+                            bprint(4, self.NIC, self.beautify, f"[>] sending ARP-reply", fore=Fore.BLACK, back=Back.GREEN)
+                    elif Arp_parsed["Opcode"] == 2 and Arp_parsed["Target IP"] == self.IP: #* IF ARP REPLY
 
                         if self.beautify >= 4:
-                            print(Fore.BLACK +Back.BLUE + f"[<] {self.NIC} received ARP reply from {Arp_parsed['Sender IP']}, MAC: {Arp_parsed['Sender MAC']}")
+                            bprint(4, self.NIC, self.beautify, f"[<] received ARP reply from {Arp_parsed['Sender IP']}, MAC: {Arp_parsed['Sender MAC']}", fore=Fore.BLACK, back=Back.BLUE)
 
                         self.ARP_Cache[Arp_parsed["Sender IP"]] = [Arp_parsed["Sender MAC"] , time.time() + 120]
-                    # Gratuitous ARP détecté : Sender IP == Target IP
-                    elif Arp_parsed["Opcode"] == 1 and Arp_parsed["Sender IP"] == Arp_parsed["Target IP"]:
+                    elif Arp_parsed["Opcode"] == 1 and Arp_parsed["Sender IP"] == Arp_parsed["Target IP"]: #* IF GRATUITOUS ARP
                         # on met à jour l'ARP cache
                         self.ARP_Cache[Arp_parsed["Sender IP"]] = [Arp_parsed["Sender MAC"], time.time() + 120]
                         if self.beautify >= 4:
-                            print(Fore.BLUE + f"[i] {self.NIC} learned gratuitous ARP: {Arp_parsed['Sender IP']} -> {Arp_parsed['Sender MAC']}")
-
-                else:
-                    print(f"[<] Delivered frame directly to {self.NIC}")
+                            bprint(4, self.NIC, self.beautify, f"[i] learned gratuitous ARP: {Arp_parsed['Sender IP']} -> {Arp_parsed['Sender MAC']}", fore=Fore.BLUE)
+                        if self.ImSwitch:
+                            self.send(raw)
+                
                 continue
-
-            # send raw frame string
-            self.send(raw)
+            
+            else: #* NOT FOR ME
+                if self.ImSwitch:
+                    self.send(raw)
+                    
+        #* TRAITEMENT FINI
 
         # clear inbox
         with open(os.path.join("port", file_name), 'w') as f:
             f.write('')
-
-        if self.debug and self.ImSwitch:
-            print(f"[i] MAC table for {self.NIC}: {self.MAC_table}")
 
         # persist ARP table
 
@@ -510,7 +522,7 @@ class RUtils:
                 del self.ARP_Cache[key]
             else:
                 if self.beautify >= 4:
-                    print(Fore.BLUE + f"[i] Time left for {key} in seconds: {float(self.ARP_Cache[key][1]) - time.time()}")
+                    bprint(4, self.NIC, self.beautify, f"[i] Time left for {key} in seconds: {float(self.ARP_Cache[key][1]) - time.time()}", fore=Fore.BLUE)
 
 
         lst_to_save = []
@@ -525,18 +537,12 @@ class RUtils:
             os.makedirs(os.path.join(os.getcwd(), "dat"), exist_ok=True)
             File.save_list(self.NIC.replace(":", "") + ".mac", self.MAC_table)
 
-    def send(self, frame):
+    def send(self, frame, force_dest=None):
         """
         Sends a frame to its destination according to the MAC table.
-
-        Parameters:
-            frame (str): the frame to send
-
-        Returns:
-            None
         """
         frame_data = MAC.field_extract(frame)
-        dst = frame_data["Destination MAC"]
+        dst = frame_data["Destination MAC"] if force_dest is None else force_dest
         src = frame_data["Source MAC"]
 
         # SWITCH MODE
@@ -544,9 +550,6 @@ class RUtils:
             # learn source MAC
             if src not in self.MAC_table:
                 self.MAC_table.append(src)
-                if self.debug:
-                    print(f"[i] Switch learned MAC address: {src}")
-
             if dst == "FF:FF:FF:FF:FF:FF":
                 # broadcast
                 for mac in MAC.flood(self.SWITCH_MAC):
@@ -555,15 +558,11 @@ class RUtils:
                     if mac == self.SWITCH_MAC:
                         continue
                     File.add_line(mac.replace(":", "") + ".res", frame)
-                    if self.debug:
-                        print(f"[>] Switch flooded frame to {mac} because broadcast")
                 return
 
             # known destination -> forward directly
             if dst in self.MAC_table:
                 File.add_line(dst.replace(":", "") + ".res", frame)
-                if self.debug:
-                    print(f"[>] Switch forwarded frame to known destination {dst}")
                 return
 
             # unknown destination -> flood (excluding source and the switch itself)
@@ -571,28 +570,21 @@ class RUtils:
             for mac in flood_list:
                 if mac != src:
                     File.add_line(mac.replace(":", "") + ".res", frame)
-                    if self.debug:
-                        print(f"[>] Switch flooded frame to {mac} because destination unknown")
             return
 
         # CLIENT MODE: always send frames to the switch
         else:
             File.add_line(self.SWITCH_MAC.replace(":", "") + ".res", frame)
-            if self.debug:
-                print(f"[>] Client sent frame to switch {self.SWITCH_MAC}")
             return
 
-    def Send_Raw_Payload(self, payload, dest_mac=None, OSI2_Protocol="Ethernet II", EtherType=0x0800):
+    def Build_Raw_Payload(self, payload, dest_mac=None, OSI2_Protocol="Ethernet II", EtherType=0x0800):
         if dest_mac is not None:
             frame = MAC.build(self.NIC, dest_mac, Type=EtherType, Payload=payload, OSI2_Protocol=OSI2_Protocol)
         else:
             frame = MAC.build(self.NIC, self.SWITCH_MAC, Type=EtherType, Payload=payload, OSI2_Protocol=OSI2_Protocol)
-        self.send(frame)
+        return frame
 
-    def Send_IPv4_Raw_Payload(self, n):
-        ...
-        
-    def Send_ARP_Raw_Payload(self, opcode, target_ip, target_mac="00:00:00:00:00:00"):
+    def Build_ARP_Raw_Payload(self, opcode, target_ip, target_mac="00:00:00:00:00:00"):
         sender_mac = self.NIC
         sender_ip = self.IP
         ARP_paquet = ARP.build(
@@ -601,9 +593,9 @@ class RUtils:
             sender_ip=sender_ip,
             target_mac=target_mac,
             target_ip=target_ip)
-        self.Send_Raw_Payload(ARP_paquet, dest_mac="FF:FF:FF:FF:FF:FF", OSI2_Protocol="Ethernet II", EtherType=0x0806)
+        return self.Build_Raw_Payload(ARP_paquet, dest_mac="FF:FF:FF:FF:FF:FF", OSI2_Protocol="Ethernet II", EtherType=0x0806)
 
-    def Send_ARP_Gratuitous(self):
+    def Build_ARP_Gratuitous(self):
         arp_packet = ARP.build(
             opcode=1,                     # ARP Request
             sender_mac=self.NIC,
@@ -613,30 +605,70 @@ class RUtils:
         )
 
         # envoi en broadcast comme toutes les gratuitous
-        self.Send_Raw_Payload(
+        return self.Build_Raw_Payload(
             arp_packet,
             dest_mac="FF:FF:FF:FF:FF:FF",
             OSI2_Protocol="Ethernet II",
             EtherType=0x0806
         )
 
-    def Send_To_IPv4(self, payload, dest_ip):
-        self.Send_ARP_Raw_Payload(1, dest_ip)
+    def Build_To_IPv4(self, payload, dest_ip, ttl=64, protocol=1, tos=0, MF=0, DF=0):
+        """
+        Builds an IPv4 packet from its constituent parts and the destination IP address.
+
+        Parameters:
+            payload (str): the payload of the packet
+            dest_ip (str): the destination IP address
+            ttl (int): the time to live field of the packet (default: 64)
+            protocol (int): the protocol field of the packet (default: ICMP = 1)
+            tos (int): the type of service field of the packet (default: 0)
+            MF (int): the more fragments flag of the packet (default: 0)
+            DF (int): the do not fragment flag of the packet (default: 0)
+
+        Returns:
+            list: a list of frames to send on the network
+        """
+        frame_to_ret = []
+        packet = IPv4.packet_build(
+            src_ip=self.IP,
+            dst_ip=dest_ip,
+            payload=payload,
+            ident=self.ident,
+            ttl=ttl,
+            tos=tos,
+            protocol=protocol,  # ICMP
+            MF=MF,
+            DF=DF)
         
+        frame_to_ret = IPv4.fragment(packet, MTU=self.MTU)
+        
+        if dest_ip in self.ARP_Cache:
+            dest_mac = self.ARP_Cache[dest_ip][0]
+        else:
+            bprint(3, self.NIC, self.beautify, f"[!] Destination IP {dest_ip} not in ARP cache. Cannot build frame.", fore=Fore.RED, bright=True)
+            return []
+        
+        final_frames = []
+        for frame in frame_to_ret:
+            final_frames.append(self.Build_Raw_Payload(frame, dest_mac=dest_mac, OSI2_Protocol="Ethernet II", EtherType=0x0800))
+            
+        return final_frames
 
 if __name__ == "__main__":
-    debug = False
     beautify = 10
     switch_mac = "00:00:00:00:00:FF"
     
-    pc0 = RUtils("00:00:00:00:00:03", "00:00:00:00:00:FF", "0.0.0.3", debug=debug, beautify=beautify)
+    pc0 = RUtils("00:00:00:00:00:03", "00:00:00:00:00:FF", "0.0.0.3", beautify=beautify)
     #pc0.Send
     #pc0.Send_ARP_Raw_Payload(1, "0.0.0.2")
     pc0.process()
+    input()
     
-    switch = RUtils("00:00:00:00:00:FF", "00:00:00:00:00:FF", "0.0.0.0", debug=debug , beautify=beautify, ARP_Gratuitous_On_start=False)
+    switch = RUtils("00:00:00:00:00:FF", "00:00:00:00:00:FF", "0.0.0.0", beautify=beautify)
     switch.process()
+    input()
 
-    pc1 = RUtils("00:00:00:00:00:02", "00:00:00:00:00:FF", "0.0.0.1", debug=debug , beautify=beautify, ARP_Gratuitous_On_start=False)
+    pc1 = RUtils("00:00:00:00:00:02", "00:00:00:00:00:FF", "0.0.0.1", beautify=beautify)
     pc1.process()
+    input()
     switch.process()
