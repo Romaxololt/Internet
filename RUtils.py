@@ -1,6 +1,7 @@
 import os
 from colorama import Fore, Style, init, Back
 import time
+import random
 
 init(autoreset=True)
 
@@ -61,7 +62,6 @@ def bprint(need_level, nic, current_level, text, fore=None, back=None, bright=Fa
 
     print(''.join(parts) + header + str(text))
 
-
 class File:
     @staticmethod
     def read_file(file_path, typeof="port"):
@@ -109,7 +109,6 @@ class File:
         with open(file_path, 'w') as f:
             for key, value in dct.items():
                 f.write(f"{key}={value}\n")
-
 
 class MAC:
     @staticmethod
@@ -181,7 +180,6 @@ class MAC:
                 flood.append(mac)
         return flood
 
-
 class ARP:
     @staticmethod
     def build(opcode, sender_mac, sender_ip, target_mac, target_ip, hw_type=1, proto_type=0x0800, hw_size=6, proto_size=4):
@@ -214,8 +212,8 @@ class ARP:
             "Hardware Size": hw_size,
             "Protocol Size": proto_size,
             "Opcode": opcode,
-            "Sender MAC": sender_mac,
-            "Sender IP": sender_ip,
+            "sender MAC": sender_mac,
+            "sender IP": sender_ip,
             "Target MAC": target_mac,
             "Target IP": target_ip
         }
@@ -231,13 +229,12 @@ class ARP:
             print("  Operation: Reply")
         else:
             print(f"  Operation: Unknown ({parsed['Opcode']})")
-        print(f"  Sender MAC Address: {parsed['Sender MAC']}")
-        print(f"  Sender IP Address: {parsed['Sender IP']}")
+        print(f"  sender MAC Address: {parsed['sender MAC']}")
+        print(f"  sender IP Address: {parsed['sender IP']}")
         if parsed["Target MAC"] == "00:00:00:00:00:00":
             print("  Target MAC Address: (unknown)")
         else:
             print(f"  Target MAC Address: {parsed['Target MAC']}")
-
 
 class IPv4:
     @staticmethod
@@ -406,6 +403,18 @@ class IPv4:
         payload = str_to_bits(payload)
         return ver_ihl + tos + total_len + ident + flags + ttl + protocol + checksum + src_ip + dst_ip + payload
 
+class ICMP:
+    @staticmethod
+    def Build_packet(type_8, code, payload, identifier, seq_number):
+        type_8 = f"{type_8:08b}"
+        code = f"{code:08b}"
+        identifier = f"{identifier:016b}"
+        seq_number = f"{seq_number:016b}"
+        payload = str_to_bits(payload)
+        checksum = f"{0:016b}"
+        header = type_8 + code + checksum + identifier + seq_number
+        checksum = f"{IPv4.checksum(header + payload):016b}"
+        return type_8 + code + checksum + identifier + seq_number + payload
 
 class RUtils:
     def __init__(self, NIC, SWITCH_MAC, IP, ident = 0, beautify=0, ARP_Gratuitous_On_start=True, MTU=1500):
@@ -450,7 +459,7 @@ class RUtils:
         self.MAC_table = File.read_file(self.NIC.replace(":", "") + ".mac", typeof="dict") if self.ImSwitch else None
 
         if ARP_Gratuitous_On_start:
-            bprint(3, self.NIC, self.beautify, f"[i] Sending gratuitous ARP on start : {self.IP} -> {self.NIC}", fore=Fore.BLACK, back=Back.YELLOW)
+            bprint(3, self.NIC, self.beautify, f"[i] sending gratuitous ARP on start : {self.IP} -> {self.NIC}", fore=Fore.BLACK, back=Back.YELLOW)
             self.send(self.Build_ARP_Gratuitous())
 
     def Constant_Process(self, timeout=1):
@@ -477,29 +486,29 @@ class RUtils:
                     Arp_parsed = ARP.parse(parsed["Payload"])
                     if Arp_parsed["Opcode"] == 1 and Arp_parsed["Target IP"] == self.IP: #* IF ARP REQUEST
                         if self.beautify >= 4:
-                            bprint(4, self.NIC, self.beautify, f"[<] received ARP request from {Arp_parsed['Sender IP']}", fore=Fore.BLUE, bright=True)
+                            bprint(4, self.NIC, self.beautify, f"[<] received ARP request from {Arp_parsed['sender IP']}", fore=Fore.BLUE, bright=True)
                         arp_reply = ARP.build(
                             opcode=2,
                             sender_mac=self.NIC,
                             sender_ip=self.IP,
-                            target_mac=Arp_parsed["Sender MAC"],
-                            target_ip=Arp_parsed["Sender IP"]
+                            target_mac=Arp_parsed["sender MAC"],
+                            target_ip=Arp_parsed["sender IP"]
                         )
                         # preserve original call to send (keeps logic intact)
-                        self.Send(self.Build_Raw_Payload(arp_reply, dest_mac=Arp_parsed["Sender MAC"], OSI2_Protocol="Ethernet II", EtherType=0x0806))
+                        self.send(self.Build_Raw_Payload(arp_reply, dest_mac=Arp_parsed["sender MAC"], OSI2_Protocol="Ethernet II", EtherType=0x0806))
                         if self.beautify >= 4:
                             bprint(4, self.NIC, self.beautify, f"[>] sending ARP-reply", fore=Fore.BLACK, back=Back.GREEN)
                     elif Arp_parsed["Opcode"] == 2 and Arp_parsed["Target IP"] == self.IP: #* IF ARP REPLY
 
                         if self.beautify >= 4:
-                            bprint(4, self.NIC, self.beautify, f"[<] received ARP reply from {Arp_parsed['Sender IP']}, MAC: {Arp_parsed['Sender MAC']}", fore=Fore.BLACK, back=Back.BLUE)
+                            bprint(4, self.NIC, self.beautify, f"[<] received ARP reply from {Arp_parsed['sender IP']}, MAC: {Arp_parsed['sender MAC']}", fore=Fore.BLACK, back=Back.BLUE)
 
-                        self.ARP_Cache[Arp_parsed["Sender IP"]] = [Arp_parsed["Sender MAC"] , time.time() + 120]
-                    elif Arp_parsed["Opcode"] == 1 and Arp_parsed["Sender IP"] == Arp_parsed["Target IP"]: #* IF GRATUITOUS ARP
+                        self.ARP_Cache[Arp_parsed["sender IP"]] = [Arp_parsed["sender MAC"] , time.time() + 120]
+                    elif Arp_parsed["Opcode"] == 1 and Arp_parsed["sender IP"] == Arp_parsed["Target IP"]: #* IF GRATUITOUS ARP
                         # on met à jour l'ARP cache
-                        self.ARP_Cache[Arp_parsed["Sender IP"]] = [Arp_parsed["Sender MAC"], time.time() + 120]
+                        self.ARP_Cache[Arp_parsed["sender IP"]] = [Arp_parsed["sender MAC"], time.time() + 120]
                         if self.beautify >= 4:
-                            bprint(4, self.NIC, self.beautify, f"[i] learned gratuitous ARP: {Arp_parsed['Sender IP']} -> {Arp_parsed['Sender MAC']}", fore=Fore.BLUE)
+                            bprint(4, self.NIC, self.beautify, f"[i] learned gratuitous ARP: {Arp_parsed['sender IP']} -> {Arp_parsed['sender MAC']}", fore=Fore.BLUE)
                         if self.ImSwitch:
                             self.send(raw)
                 
@@ -518,13 +527,15 @@ class RUtils:
         # persist ARP table
 
         for key in list(self.ARP_Cache.keys()):
+            if float(self.ARP_Cache[key][1]) - time.time() < 30 and self.beautify >= 3:
+                bprint(3, self.NIC, self.beautify, f"[!] ARP entry for {key} expiring soon", fore=Fore.RED)
+                self.send(self.Build_ARP_Raw_Payload(1, key))
             if time.time() > float(self.ARP_Cache[key][1]):
                 del self.ARP_Cache[key]
             else:
                 if self.beautify >= 4:
                     bprint(4, self.NIC, self.beautify, f"[i] Time left for {key} in seconds: {float(self.ARP_Cache[key][1]) - time.time()}", fore=Fore.BLUE)
-
-
+            
         lst_to_save = []
         for entry in self.ARP_Cache:
             lst_to_save.append(f"{entry}={self.ARP_Cache[entry][0]}={self.ARP_Cache[entry][1]}")
@@ -539,7 +550,7 @@ class RUtils:
 
     def send(self, frame, force_dest=None):
         """
-        Sends a frame to its destination according to the MAC table.
+        sends a frame to its destination according to the MAC table.
         """
         frame_data = MAC.field_extract(frame)
         dst = frame_data["Destination MAC"] if force_dest is None else force_dest
@@ -654,21 +665,33 @@ class RUtils:
             
         return final_frames
 
+    def Build_ICMP(self, type, seq_number, payload, dest_ip, code=0, identifier=random.randint(0, 65535)):
+        icmp = ICMP.Build_packet(
+            type_8=type,          # Echo Request
+            code=code,
+            identifier=identifier,
+            seq_number=seq_number,
+            payload=payload
+        )
+        return self.Build_To_IPv4(icmp, dest_ip, protocol=1)  # ICMP protocol number is 1
+        
+
 if __name__ == "__main__":
     beautify = 10
     switch_mac = "00:00:00:00:00:FF"
     
-    pc0 = RUtils("00:00:00:00:00:03", "00:00:00:00:00:FF", "0.0.0.3", beautify=beautify)
-    #pc0.Send
-    #pc0.Send_ARP_Raw_Payload(1, "0.0.0.2")
+    pc0 = RUtils("00:00:00:00:00:03", "00:00:00:00:00:FF", "192.168.1.2", beautify=beautify)
+    print(pc0.Build_ICMP(8, 1, "Hello, this is PC0!", "192.168.1.3"))
+    #pc0.send
+    #pc0.send_ARP_Raw_Payload(1, "0.0.0.2")
     pc0.process()
     input()
     
-    switch = RUtils("00:00:00:00:00:FF", "00:00:00:00:00:FF", "0.0.0.0", beautify=beautify)
+    switch = RUtils("00:00:00:00:00:FF", "00:00:00:00:00:FF", "192.168.1.1", beautify=beautify)
     switch.process()
     input()
 
-    pc1 = RUtils("00:00:00:00:00:02", "00:00:00:00:00:FF", "0.0.0.1", beautify=beautify)
+    pc1 = RUtils("00:00:00:00:00:02", "00:00:00:00:00:FF", "192.168.1.3", beautify=beautify)
     pc1.process()
     input()
     switch.process()
